@@ -497,9 +497,253 @@ next
   qed
 qed
 
+lemma adequacy1: fixes e::exp assumes wte: "\<Gamma> \<turnstile> e : T" shows "\<Gamma> \<turnstile>o e : T"
+using wte apply (induction \<Gamma> e T) apply force apply force apply force
+apply force defer apply force
+proof -
+  case (wt_lambda L T1 \<Gamma> e T2)
+  let ?X = "Suc (max (list_max L) (list_max (FV e)))"
+  show "\<Gamma> \<turnstile>o LambdaE e : T1 \<rightarrow> T2"
+  proof
+    show "?X \<notin> set (FV e)" using list_max_fresh[of "FV e" "?X"] by auto
+  next
+    have "?X \<notin> set L" using list_max_fresh by auto
+    with wt_lambda show "(?X,T1)#\<Gamma> \<turnstile>o ({0\<rightarrow>FVar ?X} e) : T2" by blast
+  qed
+qed
+
+lemma adequacy2: fixes e::exp assumes wte: "\<Gamma> \<turnstile>o e : T" shows "\<Gamma> \<turnstile> e : T"
+using wte apply (induction \<Gamma> e T rule: wt.induct) apply force 
+apply force apply force apply force defer apply force
+proof -
+  case (wt_l x e T1 \<Gamma> T2)
+  from wt_l have xfv: "x \<notin> set (FV e)" and
+    1: "(x,T1)#\<Gamma> \<turnstile> ({0\<rightarrow>FVar x}e) : T2" by auto
+  show "\<Gamma> \<turnstile> LambdaE e : T1 \<rightarrow> T2"
+  proof clarify
+    fix x' assume xL: "x' \<notin> set (FV e @ map fst \<Gamma>)"
+    from xL not_dom_lookup_none[of x' \<Gamma>] 
+    have lxg: "lookup x' \<Gamma> = None" by simp
+    hence rb: "remove_bind x ((x,T1)#\<Gamma>) ((x',T1)#\<Gamma>)" by auto 
+    have lxg2: "lookup x ((x,T1)#\<Gamma>) = Some T1" by simp
+    have wtxp: "(x',T1)#\<Gamma> \<turnstile> FVar x' : T1" by auto
+    from 1 lxg2 rb wtxp subst_pres_types
+    have 2: "(x',T1)#\<Gamma> \<turnstile> [x\<mapsto>FVar x']({0\<rightarrow>FVar x}e) : T2" by blast
+    from xfv have 3: "{0\<rightarrow>FVar x'}e = [x\<mapsto>FVar x']({0\<rightarrow>FVar x}e)"
+      using decompose_subst[of x e] by blast
+    from 2 3 show "(x',T1)#\<Gamma> \<turnstile> ({0\<rightarrow>FVar x'}e) : T2" by simp
+  qed
+qed
+
+fun WTE :: "ty \<Rightarrow> exp set" and WTV :: "ty \<Rightarrow> exp set" where
+  "WTE T = { e. \<exists> n v. interp e n = Res v \<and> v \<in> WTV T }" |
+
+  "WTV IntT = { v. \<exists> i. v = Const (IntC i) }" |
+  "WTV BoolT = {v. \<exists> b. v = Const (BoolC b) }" |
+  "WTV (T1\<rightarrow>T2) = {f. \<exists> e. f = LambdaE e \<and> [] \<turnstile>o f : T1 \<rightarrow> T2
+     \<and> (\<forall>v\<in>WTV T1.\<exists> n v'. interp ({0\<rightarrow>v} e) n = Res v' \<and> v'\<in>WTV T2)}"
+
+lemma WTE_intro[intro]: 
+  assumes ie: "interp e n = Res v" and vt: "v \<in> WTV T"
+  shows "e \<in> WTE T" using ie vt by auto
+
+fun WTENV :: "ty_env \<Rightarrow> env set" where
+  "WTENV [] = { [] }" |
+  "WTENV ((x,T)#\<Gamma>) = {\<rho>. \<exists> v \<rho>'. \<rho>=(x,v)#\<rho>' 
+                          \<and> v \<in> WTV T \<and> \<rho>' \<in> WTENV \<Gamma> }"
+
+lemma WTV_implies_WTE:
+  assumes wtv: "v \<in> WTV T" shows "v \<in> WTE T"
+  using wtv apply (cases T) apply auto by (rule_tac x="Suc 0" in exI, force)+
+
+lemma WTV_implies_WT: assumes wtv: "v \<in> WTV T" shows "[] \<turnstile>o v : T"
+  using wtv by (cases T) auto
+
+lemma wtenv_lookup: 
+  assumes lg: "lookup x \<Gamma> = Some T" and wtenv: "\<rho> \<in> WTENV \<Gamma>" 
+  shows "\<exists> v. lookup x \<rho> = Some v \<and> v \<in> WTV T"
+  using lg wtenv by (induction \<Gamma> arbitrary: x \<rho>) auto
+
 lemma prim_type_safe:
   assumes pt: "prim_type p = (T1,T2)" and wt: "const_type c = T1"
   shows "\<exists> c'. eval_prim p c = Result c' \<and> const_type c' = T2"
   using pt wt apply (case_tac p) apply (case_tac c, auto)+ done
+
+lemma wt_dom_fv2: fixes v::exp and T::ty 
+  assumes wt: "[] \<turnstile> v : T" shows "FV v = []"
+  using wt wt_dom_fv[of "[]" v T] adequacy1[of "[]" v T] by auto
+
+
+lemma WT_implies_WTE: fixes e::exp
+  assumes wt: "\<Gamma> \<turnstile> e : T" and wtenv: "\<rho> \<in> WTENV \<Gamma>" and wt_env: "\<Gamma> \<turnstile> \<rho>"
+  shows "[\<rho>]e \<in> WTE T"
+using wt wtenv wt_env
+proof (induction \<Gamma> e T arbitrary: \<rho>)
+  case (wt_const c T \<Gamma> \<rho>)
+  from this show "[\<rho>]Const c \<in> WTE T" 
+    apply (case_tac c, auto) apply (rule_tac x="Suc 0" in exI, force)+ done
+next
+  case (wt_prim \<Gamma> e T1 p T2 \<rho>)
+  from wt_prim have "[\<rho>]e \<in> WTE T1" by auto
+  from this obtain v n where 
+    ie: "interp ([\<rho>]e) n = Res v" and wtv: "v \<in> WTV T1" by auto
+  from wt_prim have pt: "prim_type p = (T1,T2)" by blast
+  from pt wtv obtain c where v: "v = Const c" and ct: "const_type c = T1"
+    by (case_tac p) auto
+  from pt v ct obtain c' where ip: "eval_prim p c = Result c'"
+    and ctp: "const_type c' = T2" using prim_type_safe by blast
+  from ie ip ctp v show "[\<rho>]Prim p e \<in> WTE T2"
+    apply (case_tac c', auto) apply (rule_tac x="Suc n" in exI, force)+ done
+next
+  case (wt_if \<Gamma> e1 e2 T e3 \<rho>)
+  from wt_if have "[\<rho>]e1 \<in> WTE BoolT" by auto
+  from this obtain v1 n1 where 
+    ie1: "interp ([\<rho>]e1) n1 = Res v1" and wtv1: "v1 \<in> WTV BoolT" by auto
+  from wtv1 obtain b where v1: "v1 = Const (BoolC b)" by auto
+  show "[\<rho>]IfE e1 e2 e3 \<in> WTE T"
+  proof (cases b)
+    case True
+    from wt_if have "[\<rho>]e2 \<in> WTE T" by auto
+    from this obtain v2 n2 where 
+      ie2: "interp ([\<rho>]e2) n2 = Res v2" and wtv2: "v2 \<in> WTV T" by auto
+    show ?thesis
+    proof (cases "n1 \<le> n2")
+      assume "n1 \<le> n2"
+      with ie1 interp_mono have "interp ([\<rho>]e1) n2 = Res v1" by blast
+      with ie2 True v1 have "interp ([\<rho>]IfE e1 e2 e3) (Suc n2) = Res v2" by simp
+      with wtv2 show ?thesis by blast
+    next
+      assume "\<not> n1 \<le> n2" -- "This case is the mirror image of the above case"
+
+(*<*)
+      from this have n12: "n2 \<le> n1" by simp
+      from ie2 n12 interp_mono have ie2b: "interp ([\<rho>]e2) n1 = Res v2"  by blast
+      from ie1 ie2b True v1
+      have iif: "interp ([\<rho>]IfE e1 e2 e3) (Suc n1) = Res v2" by simp
+      from iif wtv2 show ?thesis by blast
+(*>*)
+    qed
+  next
+    case False -- "This case is the mirror image of the case for True"
+
+(*<*)
+    from wt_if have "[\<rho>]e3 \<in> WTE T" by auto
+    from this obtain v2 n2 where 
+      ie2: "interp ([\<rho>]e3) n2 = Res v2" and wtv2: "v2 \<in> WTV T" by auto
+    show ?thesis
+    proof (cases "n1 \<le> n2")
+      assume n12: "n1 \<le> n2"
+      from ie1 n12 interp_mono have ie1b: "interp ([\<rho>]e1) n2 = Res v1"  by blast
+      from ie1b ie2 False v1
+      have iif: "interp ([\<rho>]IfE e1 e2 e3) (Suc n2) = Res v2" by simp
+      from iif wtv2 show ?thesis by blast
+    next
+      assume "\<not> n1 \<le> n2"
+      from this have n12: "n2 \<le> n1" by simp
+      from ie2 n12 interp_mono have ie2b: "interp ([\<rho>]e3) n1 = Res v2" by blast
+      from ie1 ie2b False v1
+      have iif: "interp ([\<rho>]IfE e1 e2 e3) (Suc n1) = Res v2" by simp
+      from iif wtv2 show ?thesis by blast
+    qed
+(*>*)
+  qed
+next
+  case (wt_var x \<Gamma> T \<rho>)
+  from this wtenv_lookup obtain v where lx: "lookup x \<rho> = Some v" 
+    and vt: "v \<in> WTV T" by blast
+  from wt_var lx wt_env_lookup[of x \<Gamma> T \<rho>]  have wtv: "[] \<turnstile> v : T" by auto
+  from lx wtv have "[\<rho>]FVar x = v" using msubst_var1 wt_dom_fv2 by simp
+  with vt have "[\<rho>] FVar x \<in> WTV T" by simp
+  with WTV_implies_WTE show "[\<rho>] FVar x \<in> WTE T" by auto
+next
+  case (wt_lambda L T1 \<Gamma> e T2 \<rho>)
+  from wt_lambda have gr: "\<Gamma> \<turnstile> \<rho>" by simp
+  from wt_lambda have wtr: "\<rho> \<in> WTENV \<Gamma>" by simp
+  let ?L = "L @ (FV e) @ (FV ([\<rho>]e)) @ (map fst \<Gamma>) @ (map fst \<rho>)"
+  have "[] \<turnstile> LambdaE ([\<rho>]e) : T1 \<rightarrow> T2" 
+  proof
+    show "\<forall>x. x \<notin> set ?L \<longrightarrow> [(x, T1)] \<turnstile> ({0\<rightarrow>FVar x} [\<rho>]e) : T2" 
+    proof clarify
+      fix x assume xl2: "x \<notin> set ?L"
+      let ?G1 = "[(x,T1)]@\<Gamma>" and ?G2 = "\<Gamma>@[(x,T1)]"
+      from xl2 wt_lambda have 3: "?G1 \<turnstile> ({0\<rightarrow>FVar x}e) : T2" by auto
+      from xl2 have 4: "?G1 \<preceq> ?G2" using weaken_cons_snoc by auto
+      from 3 4 have "?G2 \<turnstile> ({0\<rightarrow>FVar x}e) : T2" using env_weakening by blast
+      with gr have 5: "[(x,T1)] \<turnstile> [\<rho>]({0\<rightarrow>FVar x}e) : T2" 
+        using msubst_preserves_types by blast
+      from xl2 have "assoc_dom \<rho> \<inter> set (FV (FVar x)) = {}" by simp
+      with 5 gr msubst_permute 
+      show "[(x,T1)] \<turnstile> ({0\<rightarrow>FVar x}([\<rho>]e)) : T2" by simp
+    qed  
+  qed
+  hence wtlam: "[] \<turnstile>o LambdaE ([\<rho>]e) : T1 \<rightarrow> T2" by (rule adequacy1)
+  have ibody: "\<forall>v\<in>WTV T1.\<exists>n v'. interp({0\<rightarrow>v}[\<rho>]e) n=Res v' \<and> v'\<in>WTV T2"
+  proof
+    fix v assume vt1: "v \<in> WTV T1"
+    let ?X = "Suc (list_max [list_max L, list_max (FV e), list_max (FV ([\<rho>]e)), 
+                           list_max (map fst \<Gamma>), list_max (map fst \<rho>)])"
+    have xfv: "?X \<notin> set (FV e)" and xl: "?X \<notin> set L" 
+      using list_max_fresh by auto
+    from vt1 wtr have wtr2: "(?X,v)#\<rho> \<in> WTENV ((?X,T1)#\<Gamma>)" by simp
+    from vt1 WTV_implies_WT adequacy2 have "[] \<turnstile> v : T1" by blast
+    with gr have gr2: "((?X,T1)#\<Gamma>) \<turnstile> (?X,v)#\<rho>" by blast
+    let ?E = "[((?X,v)#\<rho>)]({0\<rightarrow>FVar ?X}e)"
+    from wt_lambda xl wtr2 gr2 have IH: "?E \<in> WTE T2" by blast
+    from IH obtain v' n where ie: "interp ?E n = Res v'" and 
+      wtvp: "v' \<in> WTV T2" by auto
+    from vt1 have "FV v = []" 
+      using WTV_implies_WT[of v T1] wt_dom_fv[of "[]" v T1] by simp
+    hence drfv: "assoc_dom \<rho> \<inter> set (FV v) = {}" by simp
+    have "?E = [\<rho>]([?X\<mapsto>v]({0\<rightarrow>FVar ?X}e))" by simp
+    also with xfv have "... = [\<rho>]({0\<rightarrow>v}e)" 
+      using decompose_subst[of "?X" e 0 v] by simp
+    finally have "?E = {0\<rightarrow>v}[\<rho>]e"  
+      using drfv gr msubst_permute[of \<rho> v \<Gamma> 0 e] by simp
+    with ie wtvp
+    show "\<exists> n v'. interp({0\<rightarrow>v}[\<rho>]e) n = Res v' \<and> v' \<in> WTV T2" by auto
+  qed
+  from wtlam ibody have lv: "LambdaE ([\<rho>]e) \<in> WTV (T1 \<rightarrow> T2)" by simp
+  have il: "interp (LambdaE ([\<rho>]e)) (Suc 0) = Res (LambdaE ([\<rho>]e))" by simp
+  from il lv have "LambdaE ([\<rho>]e) \<in> WTE (T1 \<rightarrow> T2)" by blast
+  thus "[\<rho>](LambdaE e) \<in> WTE (T1 \<rightarrow> T2)" by simp
+next
+  case (wt_app \<Gamma> e1 T T' e2 \<rho>)
+  from wt_app have "\<Gamma> \<turnstile> e1 : T \<rightarrow> T'" by simp
+  from wt_app have IH1: "[\<rho>]e1 \<in> WTE (T \<rightarrow> T')" by simp
+  from wt_app have IH2: "[\<rho>]e2 \<in> WTE T" by simp
+  from IH1 obtain v1 n1 where ie1: "interp ([\<rho>]e1) n1 = Res v1" 
+    and v1t: "v1 \<in> WTV (T\<rightarrow>T')" by force 
+  from IH2 obtain v2 n2 where ie2: "interp ([\<rho>]e2) n2 = Res v2" 
+    and v2t: "v2 \<in> WTV T" by (cases T) auto
+  from v1t obtain e where v1: "v1 = LambdaE e" and
+    app: "\<forall>v\<in>WTV T.\<exists>n v'. interp ({0\<rightarrow>v}e) n =Res v' \<and> v'\<in>WTV T'" by auto
+  from v2t app obtain n3 v' where ie3: "interp ({0\<rightarrow>v2}e) n3 = Res v'"
+    and vpt: "v' \<in> WTV T'" by auto
+  let ?N = "n1 + n2 + n3"
+  have n1n: "n1 \<le> ?N" and n2n: "n2 \<le> ?N" and n3n: "n3 \<le> ?N" by auto
+  from ie1 n1n ie2 n2n ie3 n3n have ie1b: "interp ([\<rho>]e1) ?N = Res v1" and
+    ie2b: "interp ([\<rho>]e2) ?N = Res v2" and 
+    ie3b: "interp ({0\<rightarrow>v2}e) ?N = Res v'" using interp_mono by blast+
+  from ie1b ie2b ie3b v1
+  have "interp (AppE ([\<rho>]e1) ([\<rho>]e2)) (Suc ?N) = Res v'" by auto
+  with vpt have "AppE ([\<rho>]e1) ([\<rho>]e2) \<in> WTE T'" by blast
+  thus "[\<rho>]AppE e1 e2 \<in> WTE T'" by simp
+qed
+
+theorem WT_implies_iterp:
+  fixes e::exp assumes wt: "[] \<turnstile> e : T"
+  shows "\<exists> v n. interp e n = Res v \<and> [] \<turnstile> v : T"
+proof -
+  let ?R = "[]" and ?G = "[]"
+  have 1: "?R \<in> WTENV []" by auto
+  have 2: "[] \<turnstile> []" by auto
+  from wt 1 2 have "[?R]e \<in> WTE T" by (rule WT_implies_WTE)
+  hence 3: "e \<in> WTE T" by simp
+  from 3 obtain v n where ev: "interp e n = Res v" and
+    vt: "v \<in> WTV T" by auto
+  from vt have "[] \<turnstile>o v : T" by (rule WTV_implies_WT)
+  hence "[] \<turnstile> v : T" by (rule adequacy2)
+  with ev show ?thesis by blast
+qed
 
 end
