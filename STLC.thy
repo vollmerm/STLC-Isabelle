@@ -29,6 +29,9 @@ datatype exp =
   | BVar nat 
   | LambdaE exp 
   | AppE exp exp
+  | Cons exp exp
+  | Car exp
+  | Cdr exp 
 
 abbreviation list_max :: "nat list \<Rightarrow> nat" where
   "list_max ls \<equiv> foldr max ls (0::nat)"
@@ -37,13 +40,16 @@ lemma list_max_fresh: fixes n::nat assumes g: "list_max ls < n" shows "n \<notin
 using g by (induction ls arbitrary: n) auto
 
 primrec FV :: "exp \<Rightarrow> var list" where
-  "FV (Const c) = []" |
-  "FV (Prim p e) = FV e" |
-  "FV (IfE e1 e2 e3) = (FV e1 @ FV e2 @ FV e3)" |
-  "FV (FVar y) = [y]" |
-  "FV (BVar k) = []" |
-  "FV (LambdaE e) = FV e" |
-  "FV (AppE e1 e2) = (FV e1 @ FV e2)"
+    "FV (Const c) = []"
+  | "FV (Prim p e) = FV e"
+  | "FV (IfE e1 e2 e3) = (FV e1 @ FV e2 @ FV e3)"
+  | "FV (FVar y) = [y]"
+  | "FV (BVar k) = []"
+  | "FV (LambdaE e) = FV e"
+  | "FV (AppE e1 e2) = (FV e1 @ FV e2)"
+  | "FV (Cons e1 e2) = (FV e1 @ FV e2)"
+  | "FV (Car e) = FV e"
+  | "FV (Cdr e) = FV e"
 
 abbreviation mklet :: "exp \<Rightarrow> exp \<Rightarrow> exp" where
   "mklet e1 e2 \<equiv> AppE (LambdaE e2) e1"
@@ -56,6 +62,9 @@ primrec bsubst :: "nat \<Rightarrow> exp \<Rightarrow> exp \<Rightarrow> exp" ("
   | "{j\<rightarrow>e} (BVar k) = (if k = j then e else BVar k)"
   | "{j\<rightarrow>e} (LambdaE e') = LambdaE ({(Suc j)\<rightarrow>e} e')"
   | "{j\<rightarrow>e} (AppE e1 e2) = AppE ({j\<rightarrow>e} e1) ({j\<rightarrow>e} e2)"
+  | "{j\<rightarrow>e} (Cons e1 e2) = Cons ({j\<rightarrow>e} e1) ({j\<rightarrow>e} e2)"
+  | "{j\<rightarrow>e} (Car e1) = Car ({j\<rightarrow>e} e1)"
+  | "{j\<rightarrow>e} (Cdr e1) = Cdr ({j\<rightarrow>e} e1)"
 
 primrec subst :: "var \<Rightarrow> exp \<Rightarrow> exp \<Rightarrow> exp" ("[_\<mapsto>_] _" [72,72,72] 71) where
     "[x\<mapsto>v] (Const c) = (Const c)"
@@ -65,6 +74,9 @@ primrec subst :: "var \<Rightarrow> exp \<Rightarrow> exp \<Rightarrow> exp" ("[
   | "[x\<mapsto>v] (BVar k) = BVar k"
   | "[x\<mapsto>v] (LambdaE e) = LambdaE ([x\<mapsto>v]e)"
   | "[x\<mapsto>v] (AppE e1 e2) = AppE ([x\<mapsto>v]e1) ([x\<mapsto>v]e2)"
+  | "[x\<mapsto>v] (Cons e1 e2) = Cons ([x\<mapsto>v]e1) ([x\<mapsto>v]e2)"
+  | "[x\<mapsto>v] (Car e) = Car ([x\<mapsto>v]e)"
+  | "[x\<mapsto>v] (Cdr e) = Cdr ([x\<mapsto>v]e)"
 
 lemma subst_id: fixes e::exp 
 assumes xfv: "x \<notin> set (FV e)" shows "[x\<mapsto>v]e = e"
@@ -86,33 +98,46 @@ using rfv apply (induction \<rho> arbitrary: e) apply simp using subst_id by aut
 datatype result = Res exp | Error | TimeOut
 
 fun interp :: "exp \<Rightarrow> nat \<Rightarrow> result" where
-  Const: "interp (Const c) (Suc n) = Res (Const c)" |
-  Prim: "interp (Prim p e) (Suc n) = 
-     (case interp e n of 
-         Res (Const c) \<Rightarrow> (case eval_prim p c of
-                            Result c' \<Rightarrow> Res (Const c')
-                          | PError \<Rightarrow> Error)
-     | Error \<Rightarrow> Error | TimeOut \<Rightarrow> TimeOut)" |
-  IfE: "interp (IfE e1 e2 e3) (Suc n) =
-        (case interp e1 n of
-          Res (Const (BoolC True)) \<Rightarrow> interp e2 n
-        | Res (Const (BoolC False)) \<Rightarrow> interp e3 n
-        | _ \<Rightarrow> Error)" |
-  FVar: "interp (FVar x) (Suc n) = Error" |
-  BVar: "interp (BVar k) (Suc n) = Error" |
-  LambdaE: "interp (LambdaE e) (Suc n) = Res (LambdaE e)" |
-  AppE: "interp (AppE e1 e2) (Suc n) =
-      (case (interp e1 n, interp e2 n) of
-        (Res (LambdaE e), Res v) \<Rightarrow> interp (bsubst 0 v e) n
-      | (TimeOut, _) \<Rightarrow> TimeOut | (_, TimeOut) \<Rightarrow> TimeOut | (_,_) \<Rightarrow> Error)" |
-  Else: "interp _ 0 = TimeOut"
+    Const: "interp (Const c) (Suc n) = Res (Const c)" 
+  | Prim: "interp (Prim p e) (Suc n) = 
+       (case interp e n of 
+           Res (Const c) \<Rightarrow> (case eval_prim p c of
+                              Result c' \<Rightarrow> Res (Const c')
+                            | PError \<Rightarrow> Error)
+       | Error \<Rightarrow> Error | TimeOut \<Rightarrow> TimeOut)" 
+  | IfE: "interp (IfE e1 e2 e3) (Suc n) =
+          (case interp e1 n of
+            Res (Const (BoolC True)) \<Rightarrow> interp e2 n
+          | Res (Const (BoolC False)) \<Rightarrow> interp e3 n
+          | _ \<Rightarrow> Error)" 
+  | FVar: "interp (FVar x) (Suc n) = Error" 
+  | BVar: "interp (BVar k) (Suc n) = Error" 
+  | LambdaE: "interp (LambdaE e) (Suc n) = Res (LambdaE e)" 
+  | AppE: "interp (AppE e1 e2) (Suc n) =
+        (case (interp e1 n, interp e2 n) of
+          (Res (LambdaE e), Res v) \<Rightarrow> interp (bsubst 0 v e) n
+        | (TimeOut, _) \<Rightarrow> TimeOut | (_, TimeOut) \<Rightarrow> TimeOut | (_,_) \<Rightarrow> Error)" 
+  | Cons: "interp (Cons e1 e2) (Suc n) = 
+        (case (interp e1 n, interp e2 n) of
+          (Res e1', Res e2') \<Rightarrow> Res (Cons e1' e2')
+        | (TimeOut, _) \<Rightarrow> TimeOut | (_, TimeOut) \<Rightarrow> TimeOut | (_,_) \<Rightarrow> Error)"
+  | Car: "interp (Car e) (Suc n) = 
+        (case interp e n of
+          Res (Cons e1 e2) \<Rightarrow> Res e1
+        | _ \<Rightarrow> Error)"
+  | Cdr: "interp (Cdr e) (Suc n) = 
+        (case interp e n of
+          Res (Cons e1 e2) \<Rightarrow> Res e2
+        | _ \<Rightarrow> Error)"
+  | Else: "interp _ 0 = TimeOut"
 
 lemma inv_interp_if: 
   "\<lbrakk> interp (IfE e1 e2 e3) n' = Res v;
      \<And> n b. \<lbrakk> n' = Suc n; interp e1 n = Res (Const (BoolC b));
               b \<longrightarrow> interp e2 n = Res v; \<not> b \<longrightarrow> interp e3 n = Res v
-    \<rbrakk> \<Longrightarrow> P \<rbrakk> \<Longrightarrow> P"
-  apply (case_tac n') apply force apply (case_tac "interp e1 nat", auto)
+    \<rbrakk> \<Longrightarrow> P \<rbrakk> \<Longrightarrow> P" 
+  apply (case_tac n') apply force
+  apply (case_tac "interp e1 nat", auto)
   apply (case_tac x1, auto) apply (case_tac x1a) apply force apply force
 done
 
@@ -138,8 +163,14 @@ lemma interp_mono: assumes ie: "interp e n = Res v'" and nn: "n \<le> n'"
   apply simp
   apply (case_tac n') apply simp apply force 
   apply (erule inv_interp_app) apply (case_tac n') apply force apply force
-  apply simp
-done
+  defer apply (case_tac n') apply force apply (case_tac "interp e n") 
+  apply force apply force apply force
+  defer apply (case_tac n') apply force apply (case_tac "interp e n")
+  apply force apply force apply force
+  defer apply (case_tac n') apply force apply (case_tac "interp e n")
+  apply force apply force apply force
+  sorry (* cons case not done *)
+
 
 primrec close :: "nat \<Rightarrow> var \<Rightarrow> exp \<Rightarrow> exp" ("{_\<leftarrow>_}_" [54,54,54] 53) where
     "{j\<leftarrow>x} (Const c) = Const c" 
@@ -149,6 +180,9 @@ primrec close :: "nat \<Rightarrow> var \<Rightarrow> exp \<Rightarrow> exp" ("{
   | "{j\<leftarrow>x} (BVar k) = BVar k" 
   | "{j\<leftarrow>x} (LambdaE e') = LambdaE ({(Suc j)\<leftarrow>x} e')" 
   | "{j\<leftarrow>x} (AppE e1 e2) = AppE ({j\<leftarrow>x} e1) ({j\<leftarrow>x} e2)"
+  | "{j\<leftarrow>x} (Cons e1 e2) = Cons ({j\<leftarrow>x} e1) ({j\<leftarrow>x} e2)"
+  | "{j\<leftarrow>x} (Car e) = Car ({j\<leftarrow>x} e)"
+  | "{j\<leftarrow>x} (Cdr e) = Cdr ({j\<leftarrow>x} e)"
 
 inductive reduce_fb :: "exp \<Rightarrow> exp \<Rightarrow> bool" (infix "\<longmapsto>fb" 70) where
     full_beta[intro!]: "AppE (LambdaE e) e' \<longmapsto>fb ({0\<rightarrow>e'}e)" 
@@ -164,11 +198,18 @@ inductive reduce_fb :: "exp \<Rightarrow> exp \<Rightarrow> bool" (infix "\<long
   | c_if1_fb[intro!]: "\<lbrakk> e1 \<longmapsto>fb e1' \<rbrakk> \<Longrightarrow> IfE e1 e2 e3 \<longmapsto>fb IfE e1' e2 e3" 
   | c_if2_fb[intro!]: "\<lbrakk> e2 \<longmapsto>fb e2' \<rbrakk> \<Longrightarrow> IfE e1 e2 e3 \<longmapsto>fb IfE e1 e2' e3" 
   | c_if3_fb[intro!]: "\<lbrakk> e3 \<longmapsto>fb e3' \<rbrakk> \<Longrightarrow> IfE e1 e2 e3 \<longmapsto>fb IfE e1 e2 e3'" 
+  | c_cons1[intro!]: "\<lbrakk> e1 \<longmapsto>fb e1' \<rbrakk> \<Longrightarrow> Cons e1 e2 \<longmapsto>fb Cons e1' e2"
+  | c_cons2[intro!]: "\<lbrakk> e2 \<longmapsto>fb e2' \<rbrakk> \<Longrightarrow> Cons e1 e2 \<longmapsto>fb Cons e1 e2'"
+  | c_car[intro!]: "\<lbrakk> e \<longmapsto>fb e' \<rbrakk> \<Longrightarrow> Car e \<longmapsto>fb Car e'"
+  | c_cdr[intro!]: "\<lbrakk> e \<longmapsto>fb e' \<rbrakk> \<Longrightarrow> Cdr e \<longmapsto>fb Cdr e'"
+  | r_car[intro!]: "Car (Cons e1 e2) \<longmapsto>fb e1"
+  | r_cdr[intro!]: "Cdr (Cons e1 e2) \<longmapsto>fb e2"
 
 fun val :: "exp \<Rightarrow> bool" where
-  "val (Const c) = True" |
-  "val (LambdaE e) = True" |
-  "val _ = False" 
+    "val (Const c) = True"
+  | "val (LambdaE e) = True"
+  | "val (Cons e1 e2) = ((val e1) \<and> (val e2))"
+  | "val _ = False" 
 
 inductive reduce_bv :: "exp \<Rightarrow> exp \<Rightarrow> bool" (infix "\<longmapsto>" 70) where
     beta_bv[intro!]: "val v \<Longrightarrow> AppE (LambdaE e) v \<longmapsto> ({0\<rightarrow>v}e)" 
@@ -180,12 +221,18 @@ inductive reduce_bv :: "exp \<Rightarrow> exp \<Rightarrow> bool" (infix "\<long
   | r_if_true_bv[intro!]: "IfE (Const (BoolC True)) e2 e3 \<longmapsto> e2" 
   | r_if_false_bv[intro!]: "IfE (Const (BoolC False)) e2 e3 \<longmapsto> e3" 
   | c_if_bv[intro!]: "\<lbrakk> e1 \<longmapsto> e1' \<rbrakk> \<Longrightarrow> IfE e1 e2 e3 \<longmapsto> IfE e1' e2 e3" 
+  | c_cons1_bv[intro!]: "\<lbrakk> e1 \<longmapsto> e1' \<rbrakk> \<Longrightarrow> Cons e1 e2 \<longmapsto> Cons e1' e2"
+  | c_cons2_bv[intro!]: "\<lbrakk> e2 \<longmapsto> e2' \<rbrakk> \<Longrightarrow> Cons e1 e2 \<longmapsto> Cons e1 e2'"
+  | c_car_bv[intro!]: "\<lbrakk> e \<longmapsto> e' \<rbrakk> \<Longrightarrow> Car e \<longmapsto> Car e'"
+  | c_cdr_bv[intro!]: "\<lbrakk> e \<longmapsto> e' \<rbrakk> \<Longrightarrow> Cdr e \<longmapsto> Cdr e'"
+  | r_car_bv[intro!]: "Car (Cons e1 e2) \<longmapsto> e1"
+  | r_cdr_bv[intro!]: "Cdr (Cons e1 e2) \<longmapsto> e2"
 
 inductive reduces_bv :: "exp \<Rightarrow> exp \<Rightarrow> bool" (infix "\<longmapsto>*" 70) where
     red_bv_nil[intro!]: "(e::exp) \<longmapsto>* e"
   | red_bv_cons[intro!]: "\<lbrakk> (e1::exp) \<longmapsto> e2; e2 \<longmapsto>* e3 \<rbrakk> \<Longrightarrow> e1 \<longmapsto>* e3"
 
-datatype ty = IntT | BoolT | FunT ty ty (infix "\<rightarrow>" 75)
+datatype ty = IntT | BoolT | PairT ty ty | FunT ty ty (infix "\<rightarrow>" 75)
 
 primrec prim_type :: "primitive \<Rightarrow> ty \<times> ty" where
     "prim_type Inc = (IntT, IntT)"
@@ -231,6 +278,12 @@ inductive wt :: "ty_env \<Rightarrow> exp \<Rightarrow> ty \<Rightarrow> bool" (
             \<Longrightarrow> \<Gamma> \<turnstile>o LambdaE e : T1\<rightarrow>T2" 
   | wt_a[intro!]: "\<lbrakk> \<Gamma> \<turnstile>o e1 : T \<rightarrow> T'; \<Gamma> \<turnstile>o e2 : T \<rbrakk> 
             \<Longrightarrow> \<Gamma> \<turnstile>o AppE e1 e2 : T'"
+  | wt_p1[intro!]: "\<lbrakk> \<Gamma> \<turnstile>o e1 : T1; \<Gamma> \<turnstile>o e2 : T2 \<rbrakk>
+            \<Longrightarrow> \<Gamma> \<turnstile>o Cons e1 e2 : PairT T1 T2"
+  | wt_p2[intro!]: "\<lbrakk> \<Gamma> \<turnstile>o e : (PairT T1 T2) \<rbrakk>
+            \<Longrightarrow> \<Gamma> \<turnstile>o Car e : T1"
+  | wt_p3[intro!]: "\<lbrakk> \<Gamma> \<turnstile>o e : (PairT T1 T2) \<rbrakk>
+            \<Longrightarrow> \<Gamma> \<turnstile>o Cdr e : T2"
 
 inductive well_typed :: "ty_env \<Rightarrow> exp \<Rightarrow> ty \<Rightarrow> bool" ("_ \<turnstile> _ : _" [60,60,60] 59) where
     wt_const[intro!]: "\<lbrakk> const_type c = T \<rbrakk> \<Longrightarrow> \<Gamma> \<turnstile> Const c : T" 
@@ -242,7 +295,13 @@ inductive well_typed :: "ty_env \<Rightarrow> exp \<Rightarrow> ty \<Rightarrow>
   | wt_lambda[intro!]: "\<lbrakk> \<forall> x. x \<notin> set L \<longrightarrow> (x,T1)#\<Gamma> \<turnstile> ({0\<rightarrow>FVar x} e) : T2 \<rbrakk> 
             \<Longrightarrow> \<Gamma> \<turnstile> LambdaE e : T1\<rightarrow>T2" 
   | wt_app[intro!]: "\<lbrakk> \<Gamma> \<turnstile> e1 : T \<rightarrow> T'; \<Gamma> \<turnstile> e2 : T \<rbrakk> 
-          \<Longrightarrow> \<Gamma> \<turnstile> AppE e1 e2 : T'"
+            \<Longrightarrow> \<Gamma> \<turnstile> AppE e1 e2 : T'"
+  | wt_pair[intro!]: "\<lbrakk> \<Gamma> \<turnstile> e1 : T1; \<Gamma> \<turnstile> e2 : T2 \<rbrakk>
+            \<Longrightarrow> \<Gamma> \<turnstile> Cons e1 e2 : PairT T1 T2"
+  | wt_car[intro!]: "\<lbrakk> \<Gamma> \<turnstile> e : (PairT T1 T2) \<rbrakk>
+            \<Longrightarrow> \<Gamma> \<turnstile> Car e : T1"
+  | wt_cdr[intro!]: "\<lbrakk> \<Gamma> \<turnstile> e : (PairT T1 T2) \<rbrakk>
+            \<Longrightarrow> \<Gamma> \<turnstile> Cdr e : T2"
 
 inductive_cases
   inv_wt_fvar[elim!]: "\<Gamma> \<turnstile> FVar x : T" and
@@ -250,7 +309,10 @@ inductive_cases
   inv_wt_const[elim!]: "\<Gamma> \<turnstile> Const c : T" and
   inv_wt_prim[elim!]: "\<Gamma> \<turnstile> Prim p e : T" and
   inv_wt_lambda[elim!]: "\<Gamma> \<turnstile> LambdaE e : T" and
-  inv_wt_app[elim!]: "\<Gamma> \<turnstile> AppE e1 e2 : T"
+  inv_wt_app[elim!]: "\<Gamma> \<turnstile> AppE e1 e2 : T" and
+  inv_wt_pair[elim!]: "\<Gamma> \<turnstile> Cons e1 e2 : T" and
+  inv_wt_car[elim!]: "\<Gamma> \<turnstile> Car e : T" and
+  inv_wt_cdr[elim!]: "\<Gamma> \<turnstile> Cdr e : T"
 
 inductive wt_env :: "ty_env \<Rightarrow> env \<Rightarrow> bool" ("_ \<turnstile> _" [60,60] 59) where
     wt_nil[intro!]: "[] \<turnstile> []"
@@ -275,11 +337,16 @@ apply clarify apply (erule_tac x="Suc i" in allE)
   apply (erule_tac x="Suc j" in allE) apply force
 apply clarify apply (erule_tac x=i in allE) apply (erule_tac x=i in allE) 
   apply force
+apply clarify apply (erule_tac x=i in allE) apply (erule_tac x=i in allE)
+  apply force
+apply (metis bsubst.simps(9) exp.inject(9))
+apply (metis bsubst.simps(10) exp.inject(10))
 done
 
 lemma bsubst_id: fixes e::exp assumes wte: "\<Gamma> \<turnstile> e : T" shows "{k\<rightarrow>e'}e = e"
 using wte apply (induction \<Gamma> e T arbitrary: k e')
 apply force apply force apply force apply force defer apply force
+apply force apply force apply force
 apply (erule_tac x="Suc (list_max L)" in allE) apply (erule impE) 
 apply (rule list_max_fresh) apply simp apply simp apply clarify 
 apply (rule bsubst_cross) apply blast
@@ -297,6 +364,7 @@ lemma subst_permute:
   apply force apply force apply force
   using bsubst_id apply force apply simp
   using subst_id apply force apply force apply force 
+  apply auto
 done
 
 lemma decompose_subst[rule_format]:
@@ -309,6 +377,9 @@ apply force apply force apply force
 apply clarify apply (erule_tac x=u in allE) apply (erule_tac x=x in allE) 
   apply force
 apply force
+apply force
+apply (metis FV.simps(9) bsubst.simps(9) subst.simps(9))
+apply (metis FV.simps(10) bsubst.simps(10) subst.simps(10))
 done
 
 lemma msubst_const[simp]: "[\<rho>]Const c = Const c" by (induction \<rho>) auto
@@ -376,15 +447,9 @@ lemma env_weakening[rule_format]:
 by (induct rule: well_typed.induct, force, auto)
 
 lemma wt_dom_fv: assumes wt: "\<Gamma> \<turnstile>o e : T" shows "set (FV e) \<subseteq> assoc_dom \<Gamma>"
-using wt 
-  apply (induction \<Gamma> e T)
-  apply simp
-  apply force
-  apply force
-  using lookup_dom apply force
-  defer apply force
-  apply auto
-  using fv_bsubst apply force
+using wt apply (induction \<Gamma> e T, auto)  
+using lookup_dom apply force 
+using fv_bsubst apply force
 done
 
 lemma weaken_cons_snoc: assumes xng: "x \<notin> assoc_dom \<Gamma>" 
@@ -467,6 +532,15 @@ next
 next
   case (wt_app \<Gamma> e1 T T' e2 x B \<Gamma>' v)
   thus "\<Gamma>' \<turnstile> [x\<mapsto>v]AppE e1 e2 : T'" by auto 
+next
+  case (wt_pair \<Gamma> e1 T1 e2 T2 x B \<Gamma>' v)
+  thus "\<Gamma>' \<turnstile> [x\<mapsto>v] Cons e1 e2 : PairT T1 T2" by auto
+next
+  case (wt_car \<Gamma> e T1 T2 x B \<Gamma>' v)
+  thus "\<Gamma>' \<turnstile> [x\<mapsto>v] Car e : T1" by auto
+next
+  case (wt_cdr \<Gamma> e T1 T2 x B \<Gamma>' v)
+  thus "\<Gamma>' \<turnstile> [x\<mapsto>v] Cdr e : T2" by auto
 qed
 
 lemma substitution_preserves_types:
@@ -499,7 +573,7 @@ qed
 
 lemma adequacy1: fixes e::exp assumes wte: "\<Gamma> \<turnstile> e : T" shows "\<Gamma> \<turnstile>o e : T"
 using wte apply (induction \<Gamma> e T) apply force apply force apply force
-apply force defer apply force
+apply force defer apply force defer apply force apply force defer apply force
 proof -
   case (wt_lambda L T1 \<Gamma> e T2)
   let ?X = "Suc (max (list_max L) (list_max (FV e)))"
@@ -514,7 +588,8 @@ qed
 
 lemma adequacy2: fixes e::exp assumes wte: "\<Gamma> \<turnstile>o e : T" shows "\<Gamma> \<turnstile> e : T"
 using wte apply (induction \<Gamma> e T rule: wt.induct) apply force 
-apply force apply force apply force defer apply force
+apply force apply force apply force defer apply force defer apply force apply force 
+defer apply force
 proof -
   case (wt_l x e T1 \<Gamma> T2)
   from wt_l have xfv: "x \<notin> set (FV e)" and
@@ -554,10 +629,13 @@ fun WTENV :: "ty_env \<Rightarrow> env set" where
 
 lemma WTV_implies_WTE:
   assumes wtv: "v \<in> WTV T" shows "v \<in> WTE T"
-  using wtv apply (cases T) apply auto by (rule_tac x="Suc 0" in exI, force)+
+  using wtv apply (cases T) apply auto
+  apply (rule_tac x="Suc 0" in exI, force)+ 
+  sorry
 
 lemma WTV_implies_WT: assumes wtv: "v \<in> WTV T" shows "[] \<turnstile>o v : T"
-  using wtv by (cases T) auto
+  using wtv apply (case_tac T) apply auto 
+  sorry
 
 lemma wtenv_lookup: 
   assumes lg: "lookup x \<Gamma> = Some T" and wtenv: "\<rho> \<in> WTENV \<Gamma>" 
@@ -728,6 +806,15 @@ next
   have "interp (AppE ([\<rho>]e1) ([\<rho>]e2)) (Suc ?N) = Res v'" by auto
   with vpt have "AppE ([\<rho>]e1) ([\<rho>]e2) \<in> WTE T'" by blast
   thus "[\<rho>]AppE e1 e2 \<in> WTE T'" by simp
+next
+  case (wt_pair \<Gamma> e1 T1 e2 T2 \<rho>)
+  thus ?case sorry
+next
+  case (wt_car \<Gamma> e T1 T2 \<rho>)
+  thus ?case sorry
+next
+  case (wt_cdr \<Gamma> e T1 T2 \<rho>)
+  thus ?case sorry
 qed
 
 theorem WT_implies_iterp:
